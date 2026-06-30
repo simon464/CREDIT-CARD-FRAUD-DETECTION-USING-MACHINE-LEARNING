@@ -59,6 +59,10 @@ CATEGORICAL_FEATURES = [
     "gender",
 ]
 
+# City population is still a model feature because the saved models were trained with it.
+# It is hidden from the manual form and filled with this default value.
+DEFAULT_CITY_POP = 50000
+
 
 class SafiCardFeatureEngineer(BaseEstimator, TransformerMixin):
     """
@@ -66,11 +70,14 @@ class SafiCardFeatureEngineer(BaseEstimator, TransformerMixin):
 
     It accepts either:
     1. Raw transaction columns:
-       trans_date_trans_time, category, amt, gender, city_pop, dob,
+       trans_date_trans_time, category, amt, gender, age or dob,
        lat, long, merch_lat, merch_long
 
     2. Already-engineered columns:
-       category, amt, gender, city_pop, hour, day, month, dayofweek, age, distance_km
+       category, amt, gender, hour, day, month, dayofweek, age, distance_km
+
+    Note: city_pop is still required by the trained model, but the app hides it
+    from the user and supplies a default value automatically.
 
     It returns the exact final feature columns used during training.
     """
@@ -189,6 +196,13 @@ class SafiCardFeatureEngineer(BaseEstimator, TransformerMixin):
         elif "distance_km" not in X.columns:
             X["distance_km"] = np.nan
 
+        # City population is hidden from the manual form, but the trained models
+        # still expect it. If it is missing, use a safe default value.
+        if "city_pop" not in X.columns:
+            X["city_pop"] = DEFAULT_CITY_POP
+        else:
+            X["city_pop"] = pd.to_numeric(X["city_pop"], errors="coerce").fillna(DEFAULT_CITY_POP)
+
         # Make sure final columns exist and are in the correct order.
         for col in FINAL_FEATURES:
             if col not in X.columns:
@@ -250,8 +264,7 @@ RAW_REQUIRED_COLUMNS = [
     "category",
     "amt",
     "gender",
-    "city_pop",
-    "dob",
+    "age",
     "lat",
     "long",
     "merch_lat",
@@ -262,7 +275,6 @@ ENGINEERED_REQUIRED_COLUMNS = [
     "category",
     "amt",
     "gender",
-    "city_pop",
     "hour",
     "day",
     "month",
@@ -346,24 +358,47 @@ def available_model_files(models_dir: Path):
 
 def validate_input_columns(df: pd.DataFrame):
     """
-    CSV is valid if it has raw columns or already-engineered columns.
-    Aliases are handled inside SafiCardFeatureEngineer, but this validation
-    checks the common canonical forms.
+    CSV is valid if it has enough raw columns or enough already-engineered columns.
+    city_pop is optional because the app can supply DEFAULT_CITY_POP when it is missing.
+    Age may be supplied directly as age, or calculated from dob when transaction time exists.
+    Distance may be supplied directly as distance_km, or calculated from coordinates.
     """
     cols = set(df.columns)
 
-    has_raw = all(col in cols for col in RAW_REQUIRED_COLUMNS)
+    has_raw_base = all(col in cols for col in ["trans_date_trans_time", "category", "amt", "gender"])
+    has_age_or_dob = "age" in cols or "dob" in cols
+    has_coordinates = all(col in cols for col in ["lat", "long", "merch_lat", "merch_long"])
+    has_distance = "distance_km" in cols
+
+    has_raw = has_raw_base and has_age_or_dob and (has_coordinates or has_distance)
     has_engineered = all(col in cols for col in ENGINEERED_REQUIRED_COLUMNS)
 
     if has_raw or has_engineered:
         return []
 
-    missing_raw = [col for col in RAW_REQUIRED_COLUMNS if col not in cols]
-    missing_engineered = [col for col in ENGINEERED_REQUIRED_COLUMNS if col not in cols]
-
     return {
-        "missing_raw_columns": missing_raw,
-        "missing_engineered_columns": missing_engineered,
+        "accepted_raw_format": [
+            "trans_date_trans_time",
+            "category",
+            "amt",
+            "gender",
+            "age or dob",
+            "lat/long/merch_lat/merch_long or distance_km",
+            "city_pop is optional and defaults to 50000",
+        ],
+        "accepted_engineered_format": [
+            "category",
+            "amt",
+            "gender",
+            "hour",
+            "day",
+            "month",
+            "dayofweek",
+            "age",
+            "distance_km",
+            "city_pop is optional and defaults to 50000",
+        ],
+        "columns_found": list(df.columns),
     }
 
 
@@ -389,13 +424,18 @@ def prepare_single_transaction(
     category,
     amount,
     gender,
-    city_pop,
     age,
     lat,
     long,
     merch_lat,
     merch_long,
+    city_pop=DEFAULT_CITY_POP,
 ):
+    """Create a one-row raw transaction for prediction.
+
+    city_pop is not collected from the user anymore. It is added internally
+    because the trained models still expect the city_pop feature.
+    """
     transaction_datetime = f"{trans_date} {trans_time}"
 
     return pd.DataFrame(
@@ -406,7 +446,7 @@ def prepare_single_transaction(
                 "amt": float(amount),
                 "gender": gender,
                 "city_pop": int(city_pop),
-                "dob": str(dob),
+                "age": int(age),
                 "lat": float(lat),
                 "long": float(long),
                 "merch_lat": float(merch_lat),
@@ -907,8 +947,7 @@ with tab_single:
 
         with col2:
             gender = st.selectbox("Gender", ["M", "F"])
-            city_pop = st.text_input("City Population", value="50000", help="Type the population directly, for example 50000 or 1,000,000")
-            age = st.text_input("Cardholder Age", value="41")
+            age = st.text_input("Cardholder Age", value="41", help="Type the cardholder age directly, for example 41")
             
         with col3:
             lat = st.text_input("Cardholder Latitude", value="0.514300")
@@ -921,6 +960,9 @@ with tab_single:
     if submitted:
         try:
             amount_value = parse_float_input(amount, "Transaction Amount")
+            age_value = parse_int_input(age, "Cardholder Age")
+            if age_value <= 0:
+                raise ValueError("Cardholder Age must be greater than 0.")
             lat_value = parse_float_input(lat, "Cardholder Latitude")
             long_value = parse_float_input(long, "Cardholder Longitude")
             merch_lat_value = parse_float_input(merch_lat, "Merchant Latitude")
@@ -932,7 +974,7 @@ with tab_single:
                 category=category,
                 amount=amount_value,
                 gender=gender,
-                age=age,
+                age=age_value,
                 lat=lat_value,
                 long=long_value,
                 merch_lat=merch_lat_value,
@@ -995,12 +1037,14 @@ with tab_batch:
         st.markdown(
             """
             **Raw CSV columns:**
-            `trans_date_trans_time`, `category`, `amt`, `gender`, `city_pop`, `dob`,
-            `lat`, `long`, `merch_lat`, `merch_long`
+            `trans_date_trans_time`, `category`, `amt`, `gender`, `age` or `dob`,
+            and either `lat`, `long`, `merch_lat`, `merch_long` or `distance_km`.
+            `city_pop` is optional and defaults to 50,000 if missing.
 
             **Or already-engineered columns:**
-            `category`, `amt`, `gender`, `city_pop`, `hour`, `day`, `month`,
-            `dayofweek`, `age`, `distance_km`
+            `category`, `amt`, `gender`, `hour`, `day`, `month`,
+            `dayofweek`, `age`, `distance_km`.
+            `city_pop` is optional and defaults to 50,000 if missing.
             """
         )
 
@@ -1068,7 +1112,7 @@ with tab_about:
         - `category`
         - `amt`
         - `gender`
-        - `city_pop`
+        - `city_pop` *(hidden in manual input; default value used internally)*
         - `hour`
         - `day`
         - `month`
