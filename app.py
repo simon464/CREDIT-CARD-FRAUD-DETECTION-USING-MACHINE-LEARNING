@@ -390,7 +390,7 @@ def prepare_single_transaction(
     amount,
     gender,
     city_pop,
-    dob,
+    age,
     lat,
     long,
     merch_lat,
@@ -908,8 +908,8 @@ with tab_single:
         with col2:
             gender = st.selectbox("Gender", ["M", "F"])
             city_pop = st.text_input("City Population", value="50000", help="Type the population directly, for example 50000 or 1,000,000")
-            dob = st.date_input("Cardholder Date of Birth")
-
+            age = st.text_input("Cardholder Age", value="41")
+            
         with col3:
             lat = st.text_input("Cardholder Latitude", value="0.514300")
             long = st.text_input("Cardholder Longitude", value="35.269800")
@@ -921,7 +921,6 @@ with tab_single:
     if submitted:
         try:
             amount_value = parse_float_input(amount, "Transaction Amount")
-            city_pop_value = parse_int_input(city_pop, "City Population")
             lat_value = parse_float_input(lat, "Cardholder Latitude")
             long_value = parse_float_input(long, "Cardholder Longitude")
             merch_lat_value = parse_float_input(merch_lat, "Merchant Latitude")
@@ -933,8 +932,7 @@ with tab_single:
                 category=category,
                 amount=amount_value,
                 gender=gender,
-                city_pop=city_pop_value,
-                dob=dob,
+                age=age,
                 lat=lat_value,
                 long=long_value,
                 merch_lat=merch_lat_value,
