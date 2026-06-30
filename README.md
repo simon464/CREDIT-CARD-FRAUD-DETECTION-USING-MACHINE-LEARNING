@@ -55,6 +55,8 @@ Instead of relying only on the default probability threshold of `0.5`, the proje
 ## Dataset
 
 The project used the **Credit Card Transactions Fraud Detection Dataset** from Kaggle. The dataset contains synthetic credit card transaction records with labels showing whether each transaction is fraudulent or legitimate.
+(https://www.kaggle.com/datasets/kartik2112/fraud-detection) the link to the dataset used in this project
+
 
 The dataset includes two main files:
 
