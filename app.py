@@ -209,7 +209,7 @@ sys.modules["__main__"].SafiCardFeatureEngineer = SafiCardFeatureEngineer
 # =============================================================================
 
 st.set_page_config(
-    page_title="💳 Streamlit based application for Credit Card Fraud Detection System",
+    page_title="Streamlit based application for Credit Card Fraud Detection System",
     page_icon="💳",
     layout="wide",
 )
