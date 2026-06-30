@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import math
+import base64
 import joblib
 import __main__
 import numpy as np
@@ -23,11 +24,6 @@ from sklearn.base import BaseEstimator, TransformerMixin
 
 # =============================================================================
 # CUSTOM TRANSFORMER REQUIRED BY THE SAVED .pkl MODELS
-# =============================================================================
-# Your saved pipelines were trained/saved while this custom class existed in the
-# notebook as __main__.SafiCardFeatureEngineer. If this class is not available
-# BEFORE joblib.load(...), model loading fails with:
-# AttributeError: Can't get attribute 'SafiCardFeatureEngineer' on <module '__main__'>
 # =============================================================================
 
 FINAL_FEATURES = [
@@ -59,27 +55,13 @@ CATEGORICAL_FEATURES = [
     "gender",
 ]
 
-# City population is still a model feature because the saved models were trained with it.
-# It is hidden from the manual form and filled with this default value.
-DEFAULT_CITY_POP = 50000
-
 
 class SafiCardFeatureEngineer(BaseEstimator, TransformerMixin):
     """
     Feature engineer used by the trained SafiCard fraud detection pipelines.
 
-    It accepts either:
-    1. Raw transaction columns:
-       trans_date_trans_time, category, amt, gender, age or dob,
-       lat, long, merch_lat, merch_long
-
-    2. Already-engineered columns:
-       category, amt, gender, hour, day, month, dayofweek, age, distance_km
-
-    Note: city_pop is still required by the trained model, but the app hides it
-    from the user and supplies a default value automatically.
-
-    It returns the exact final feature columns used during training.
+    It accepts either raw transaction columns or already-engineered columns and
+    returns the exact final model feature columns used during training.
     """
 
     def fit(self, X, y=None):
@@ -155,8 +137,7 @@ class SafiCardFeatureEngineer(BaseEstimator, TransformerMixin):
         X = pd.DataFrame(X).copy()
         X = self._apply_aliases(X)
 
-        # Date/time features: create only when raw datetime exists.
-        # Otherwise preserve already-engineered columns if the CSV/app supplied them.
+        # Date/time features
         if "trans_date_trans_time" in X.columns:
             trans_dt = pd.to_datetime(X["trans_date_trans_time"], errors="coerce")
             X["hour"] = trans_dt.dt.hour
@@ -168,8 +149,7 @@ class SafiCardFeatureEngineer(BaseEstimator, TransformerMixin):
                 if col not in X.columns:
                     X[col] = np.nan
 
-        # Age feature: create from dob and transaction date if possible.
-        # Otherwise preserve existing age if it was supplied.
+        # Age feature: compute from dob if available; otherwise keep supplied age.
         if "dob" in X.columns and "trans_date_trans_time" in X.columns:
             dob = pd.to_datetime(X["dob"], errors="coerce")
             trans_dt = pd.to_datetime(X["trans_date_trans_time"], errors="coerce")
@@ -183,8 +163,7 @@ class SafiCardFeatureEngineer(BaseEstimator, TransformerMixin):
         elif "age" not in X.columns:
             X["age"] = np.nan
 
-        # Distance feature: create from coordinates if possible.
-        # Otherwise preserve existing distance_km if it was supplied.
+        # Distance feature
         required_distance_columns = {"lat", "long", "merch_lat", "merch_long"}
         if required_distance_columns.issubset(set(X.columns)):
             X["distance_km"] = self.haversine_distance_km(
@@ -196,12 +175,9 @@ class SafiCardFeatureEngineer(BaseEstimator, TransformerMixin):
         elif "distance_km" not in X.columns:
             X["distance_km"] = np.nan
 
-        # City population is hidden from the manual form, but the trained models
-        # still expect it. If it is missing, use a safe default value.
+        # Ensure city_pop exists because the trained models expect it.
         if "city_pop" not in X.columns:
             X["city_pop"] = DEFAULT_CITY_POP
-        else:
-            X["city_pop"] = pd.to_numeric(X["city_pop"], errors="coerce").fillna(DEFAULT_CITY_POP)
 
         # Make sure final columns exist and are in the correct order.
         for col in FINAL_FEATURES:
@@ -212,7 +188,6 @@ class SafiCardFeatureEngineer(BaseEstimator, TransformerMixin):
 
 
 # Make the class available exactly where pickle/joblib expects it.
-# This is the key fix for the __main__.SafiCardFeatureEngineer loading error.
 SafiCardFeatureEngineer.__module__ = "__main__"
 setattr(__main__, "SafiCardFeatureEngineer", SafiCardFeatureEngineer)
 sys.modules["__main__"].SafiCardFeatureEngineer = SafiCardFeatureEngineer
@@ -223,13 +198,18 @@ sys.modules["__main__"].SafiCardFeatureEngineer = SafiCardFeatureEngineer
 # =============================================================================
 
 st.set_page_config(
-    page_title="Streamlit based application for Credit Card Fraud Detection System",
+    page_title="Credit Card Fraud Detection System",
     page_icon="💳",
     layout="wide",
 )
 
 BASE_DIR = Path(__file__).resolve().parent
 MODELS_DIR = BASE_DIR / "models"
+ASSETS_DIR = BASE_DIR / "assets"
+
+# City population is removed from the manual app form, but the model still expects it.
+# This default value keeps the deployed app compatible with the trained pipelines.
+DEFAULT_CITY_POP = 50000
 
 MODEL_DISPLAY_NAMES = {
     "lr": "Logistic Regression",
@@ -259,19 +239,18 @@ DEFAULT_THRESHOLDS = {
     "lgbm": 0.50,
 }
 
-RAW_REQUIRED_COLUMNS = [
+RAW_REQUIRED_BASE_COLUMNS = [
     "trans_date_trans_time",
     "category",
     "amt",
     "gender",
-    "age",
     "lat",
     "long",
     "merch_lat",
     "merch_long",
 ]
 
-ENGINEERED_REQUIRED_COLUMNS = [
+ENGINEERED_REQUIRED_BASE_COLUMNS = [
     "category",
     "amt",
     "gender",
@@ -305,6 +284,85 @@ DECISION_DETAILS = {
     "MANUAL REVIEW": "Exactly 2 models flagged the transaction as fraud.",
     "BLOCK": "3 or 4 models flagged the transaction as fraud.",
 }
+
+
+# =============================================================================
+# BACKGROUND AND STYLE
+# =============================================================================
+
+def set_background_image(image_path):
+    """
+    Add a background image if it exists.
+    Put your image at: assets/background.jpg or assets/background.png
+    """
+    image_path = Path(image_path)
+
+    if not image_path.exists():
+        return
+
+    image_extension = image_path.suffix.replace(".", "").lower()
+    if image_extension == "jpg":
+        image_extension = "jpeg"
+
+    encoded_image = base64.b64encode(image_path.read_bytes()).decode()
+
+    st.markdown(
+        f"""
+        <style>
+        .stApp {{
+            background-image:
+                linear-gradient(rgba(4, 8, 18, 0.85), rgba(4, 8, 18, 0.85)),
+                url("data:image/{image_extension};base64,{encoded_image}");
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+            background-attachment: fixed;
+        }}
+
+        [data-testid="stHeader"] {{
+            background: rgba(0, 0, 0, 0);
+        }}
+
+        [data-testid="stSidebar"] > div:first-child {{
+            background: rgba(20, 20, 30, 0.92);
+        }}
+
+        .block-container {{
+            padding-top: 2rem;
+        }}
+
+        div[data-testid="stForm"] {{
+            background: rgba(22, 25, 35, 0.72);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 14px;
+            padding: 18px;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def apply_default_style():
+    st.markdown(
+        """
+        <style>
+        .stButton > button, .stDownloadButton > button {
+            border-radius: 9px;
+            font-weight: 700;
+        }
+
+        h1, h2, h3 {
+            letter-spacing: -0.02em;
+        }
+
+        [data-testid="stMetricValue"] {
+            font-size: 1.35rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # =============================================================================
@@ -356,50 +414,56 @@ def available_model_files(models_dir: Path):
     return sorted([p.name for p in models_dir.iterdir() if p.is_file()])
 
 
+def parse_float_input(value, field_name: str) -> float:
+    """Parse text inputs like 1000, 1,000, or 35.2698 into float."""
+    text = str(value).strip().replace(",", "")
+    if text == "":
+        raise ValueError(f"{field_name} cannot be empty.")
+    return float(text)
+
+
+def parse_int_input(value, field_name: str) -> int:
+    """Parse text inputs like 41 or 41.0 into int."""
+    number = parse_float_input(value, field_name)
+    return int(round(number))
+
+
 def validate_input_columns(df: pd.DataFrame):
     """
-    CSV is valid if it has enough raw columns or enough already-engineered columns.
-    city_pop is optional because the app can supply DEFAULT_CITY_POP when it is missing.
-    Age may be supplied directly as age, or calculated from dob when transaction time exists.
-    Distance may be supplied directly as distance_km, or calculated from coordinates.
+    CSV is valid if it has:
+    1. Raw transaction columns plus either dob or age.
+    2. Already-engineered columns.
+
+    city_pop is optional. If missing, the app fills it with DEFAULT_CITY_POP.
     """
     cols = set(df.columns)
 
-    has_raw_base = all(col in cols for col in ["trans_date_trans_time", "category", "amt", "gender"])
-    has_age_or_dob = "age" in cols or "dob" in cols
-    has_coordinates = all(col in cols for col in ["lat", "long", "merch_lat", "merch_long"])
-    has_distance = "distance_km" in cols
+    has_raw_base = all(col in cols for col in RAW_REQUIRED_BASE_COLUMNS)
+    has_raw_age = ("dob" in cols) or ("age" in cols)
+    has_raw = has_raw_base and has_raw_age
 
-    has_raw = has_raw_base and has_age_or_dob and (has_coordinates or has_distance)
-    has_engineered = all(col in cols for col in ENGINEERED_REQUIRED_COLUMNS)
+    has_engineered = all(col in cols for col in ENGINEERED_REQUIRED_BASE_COLUMNS)
 
     if has_raw or has_engineered:
         return []
 
+    missing_raw_base = [col for col in RAW_REQUIRED_BASE_COLUMNS if col not in cols]
+    missing_engineered = [col for col in ENGINEERED_REQUIRED_BASE_COLUMNS if col not in cols]
+
     return {
-        "accepted_raw_format": [
-            "trans_date_trans_time",
-            "category",
-            "amt",
-            "gender",
-            "age or dob",
-            "lat/long/merch_lat/merch_long or distance_km",
-            "city_pop is optional and defaults to 50000",
-        ],
-        "accepted_engineered_format": [
-            "category",
-            "amt",
-            "gender",
-            "hour",
-            "day",
-            "month",
-            "dayofweek",
-            "age",
-            "distance_km",
-            "city_pop is optional and defaults to 50000",
-        ],
-        "columns_found": list(df.columns),
+        "missing_raw_base_columns": missing_raw_base,
+        "raw_age_requirement": "Provide either 'dob' or 'age'.",
+        "missing_engineered_columns": missing_engineered,
+        "note": "city_pop is optional and will default to 50000 when missing.",
     }
+
+
+def add_default_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Add columns that are required by the model but no longer shown in the manual app form."""
+    df = df.copy()
+    if "city_pop" not in df.columns:
+        df["city_pop"] = DEFAULT_CITY_POP
+    return df
 
 
 def consensus_decision(vote_count: int) -> str:
@@ -429,12 +493,12 @@ def prepare_single_transaction(
     long,
     merch_lat,
     merch_long,
-    city_pop=DEFAULT_CITY_POP,
 ):
-    """Create a one-row raw transaction for prediction.
+    """
+    Prepare one manual transaction for prediction.
 
-    city_pop is not collected from the user anymore. It is added internally
-    because the trained models still expect the city_pop feature.
+    city_pop is not requested from the user anymore, but it is still added as a
+    default because the trained models expect the city_pop feature.
     """
     transaction_datetime = f"{trans_date} {trans_time}"
 
@@ -445,7 +509,7 @@ def prepare_single_transaction(
                 "category": category,
                 "amt": float(amount),
                 "gender": gender,
-                "city_pop": int(city_pop),
+                "city_pop": DEFAULT_CITY_POP,
                 "age": int(age),
                 "lat": float(lat),
                 "long": float(long),
@@ -454,20 +518,6 @@ def prepare_single_transaction(
             }
         ]
     )
-
-
-def parse_float_input(value, field_name: str) -> float:
-    """Parse text inputs like 1000, 1,000, or 35.2698 into float."""
-    text = str(value).strip().replace(",", "")
-    if text == "":
-        raise ValueError(f"{field_name} cannot be empty.")
-    return float(text)
-
-
-def parse_int_input(value, field_name: str) -> int:
-    """Parse text inputs like 50000 or 50,000 into int."""
-    number = parse_float_input(value, field_name)
-    return int(round(number))
 
 
 # =============================================================================
@@ -522,7 +572,7 @@ def load_artifacts(models_dir: Path = MODELS_DIR):
         except Exception as exc:
             errors.append(f"Could not load consensus_package.pkl: {type(exc).__name__}: {exc}")
 
-    # 2. Load individual model files. These fill missing models or replace failed package loading.
+    # 2. Load individual model files.
     for key, filename in MODEL_FILES.items():
         path = models_dir / filename
         if path.exists() and key not in models:
@@ -542,7 +592,7 @@ def load_artifacts(models_dir: Path = MODELS_DIR):
             except Exception as exc:
                 errors.append(f"Could not load {filename}: {type(exc).__name__}: {exc}")
 
-    # 4. Optional thresholds.json overrides or fills thresholds.
+    # 4. Optional thresholds.json.
     json_threshold_path = models_dir / "thresholds.json"
     if json_threshold_path.exists():
         try:
@@ -592,6 +642,7 @@ def predict_with_consensus(raw_df: pd.DataFrame, models: dict, thresholds: dict)
     if not models:
         raise ValueError("No trained models were loaded.")
 
+    raw_df = add_default_columns(raw_df)
     result_df = raw_df.copy()
     probability_columns = []
     prediction_columns = []
@@ -693,7 +744,7 @@ def transform_input_for_shap(model, raw_df: pd.DataFrame):
     Run the same preprocessing steps used by the pipeline, then return the final
     transformed matrix and feature names for SHAP.
     """
-    X = raw_df.copy()
+    X = add_default_columns(raw_df.copy())
     feature_names = list(X.columns)
 
     # If the saved object is not a pipeline, use the engineered features directly.
@@ -845,12 +896,12 @@ def show_shap_explanation(raw_transaction: pd.DataFrame, models: dict):
         if not positive_reasons.empty:
             st.markdown("**Main reasons increasing fraud risk:**")
             for _, reason in positive_reasons.iterrows():
-                st.write(f"- {reason['Feature']} contributed positively to the fraud score.")
+                st.write(f"- **{reason['Feature']}** contributed positively to the fraud score.")
 
         if not negative_reasons.empty:
             st.markdown("**Main reasons reducing fraud risk:**")
             for _, reason in negative_reasons.iterrows():
-                st.write(f"- {reason['Feature']} contributed negatively to the fraud score.")
+                st.write(f"- **{reason['Feature']}** contributed negatively to the fraud score.")
 
         with st.expander("Technical note"):
             st.write(
@@ -869,6 +920,16 @@ def show_shap_explanation(raw_transaction: pd.DataFrame, models: dict):
 # =============================================================================
 # UI
 # =============================================================================
+
+# The app supports either JPG or PNG background image.
+# Upload one of these to GitHub if you want the background to appear:
+# assets/background.jpg OR assets/background.png
+if (ASSETS_DIR / "background.jpg").exists():
+    set_background_image(ASSETS_DIR / "background.jpg")
+elif (ASSETS_DIR / "background.png").exists():
+    set_background_image(ASSETS_DIR / "background.png")
+
+apply_default_style()
 
 st.title("💳 Streamlit based application for Credit Card Fraud Detection System")
 st.caption("Streamlit hosting app for the already-trained fraud detection pipelines.")
@@ -943,12 +1004,16 @@ with tab_single:
             trans_date = st.date_input("Transaction Date")
             trans_time = st.time_input("Transaction Time")
             category = st.selectbox("Transaction Category", CATEGORY_OPTIONS, index=0)
-            amount = st.text_input("Transaction Amount", value="100.00", help="Type the amount directly, for example 1000 or 2500.50")
+            amount = st.text_input(
+                "Transaction Amount",
+                value="100.00",
+                help="Type the amount directly, for example 1000 or 2500.50",
+            )
 
         with col2:
             gender = st.selectbox("Gender", ["M", "F"])
-            age = st.text_input("Cardholder Age", value="41", help="Type the cardholder age directly, for example 41")
-            
+            age = st.text_input("Cardholder Age", value="41", help="Type the cardholder age directly.")
+
         with col3:
             lat = st.text_input("Cardholder Latitude", value="0.514300")
             long = st.text_input("Cardholder Longitude", value="35.269800")
@@ -961,12 +1026,13 @@ with tab_single:
         try:
             amount_value = parse_float_input(amount, "Transaction Amount")
             age_value = parse_int_input(age, "Cardholder Age")
-            if age_value <= 0:
-                raise ValueError("Cardholder Age must be greater than 0.")
             lat_value = parse_float_input(lat, "Cardholder Latitude")
             long_value = parse_float_input(long, "Cardholder Longitude")
             merch_lat_value = parse_float_input(merch_lat, "Merchant Latitude")
             merch_long_value = parse_float_input(merch_long, "Merchant Longitude")
+
+            if age_value <= 0:
+                raise ValueError("Cardholder Age must be greater than 0.")
 
             raw_transaction = prepare_single_transaction(
                 trans_date=trans_date,
@@ -1030,21 +1096,26 @@ with tab_batch:
     st.subheader("Upload CSV for Batch Prediction")
 
     st.write(
-        "Your CSV can contain either the raw columns or the final engineered columns."
+        "Your CSV can contain either the raw columns or the final engineered columns. "
+        "The `city_pop` column is optional and will default to 50,000 if missing."
     )
 
     with st.expander("Accepted CSV column formats"):
         st.markdown(
             """
             **Raw CSV columns:**
-            `trans_date_trans_time`, `category`, `amt`, `gender`, `age` or `dob`,
-            and either `lat`, `long`, `merch_lat`, `merch_long` or `distance_km`.
-            `city_pop` is optional and defaults to 50,000 if missing.
+            `trans_date_trans_time`, `category`, `amt`, `gender`,
+            `lat`, `long`, `merch_lat`, `merch_long`, and either `dob` or `age`
+
+            **Optional raw column:**
+            `city_pop`
 
             **Or already-engineered columns:**
             `category`, `amt`, `gender`, `hour`, `day`, `month`,
-            `dayofweek`, `age`, `distance_km`.
-            `city_pop` is optional and defaults to 50,000 if missing.
+            `dayofweek`, `age`, `distance_km`
+
+            **Optional engineered column:**
+            `city_pop`
             """
         )
 
@@ -1061,6 +1132,7 @@ with tab_batch:
                 )
                 st.json(missing_info)
             else:
+                batch_df = add_default_columns(batch_df)
                 batch_results, _, _ = predict_with_consensus(batch_df, models, thresholds)
 
                 st.success(f"Predicted {len(batch_results):,} transactions.")
@@ -1103,16 +1175,26 @@ with tab_about:
     )
 
     st.markdown(
-        """
+        f"""
         **Pipeline used by each saved model:**
 
         Raw transaction data → `SafiCardFeatureEngineer` → Preprocessing → Model prediction
 
-        **Final engineered features:**
+        **Manual app inputs:**
         - `category`
         - `amt`
         - `gender`
-        - `city_pop` *(hidden in manual input; default value used internally)*
+        - `age`
+        - `lat`
+        - `long`
+        - `merch_lat`
+        - `merch_long`
+
+        **Final engineered features used by the model:**
+        - `category`
+        - `amt`
+        - `gender`
+        - `city_pop` *(defaulted to {DEFAULT_CITY_POP:,} in manual prediction)*
         - `hour`
         - `day`
         - `month`
@@ -1129,6 +1211,9 @@ with tab_about:
         - Shows the main features that pushed the prediction toward fraud
         - Positive SHAP values increase fraud risk
         - Negative SHAP values reduce fraud risk
+
+        **Background image:**
+        - Add `assets/background.jpg` or `assets/background.png` to your GitHub repository to show a background image.
         """
     )
 
