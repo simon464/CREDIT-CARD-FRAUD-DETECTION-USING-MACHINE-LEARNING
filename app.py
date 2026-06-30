@@ -830,7 +830,7 @@ def show_shap_explanation(raw_transaction: pd.DataFrame, models: dict):
 # UI
 # =============================================================================
 
-st.title("💳 SafiCard Credit Card Fraud Detection System")
+st.title("💳 Streamlit based application for Credit Card Fraud Detection System")
 st.caption("Streamlit hosting app for the already-trained fraud detection pipelines.")
 
 models, thresholds, load_errors = load_artifacts(MODELS_DIR)
